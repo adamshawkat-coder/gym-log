@@ -6,34 +6,331 @@
     <title>Pro Gym Log</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* System fonts for maximum performance and native feel */
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #F3F4F6; color: #111827; overflow-x: hidden; }
-        
-        /* Smooth transitions */
         .drawer-open { transform: translateX(0); }
         .drawer-closed { transform: translateX(-100%); }
         .overlay-open { opacity: 1; pointer-events: auto; }
         .overlay-closed { opacity: 0; pointer-events: none; }
-        
-        /* Hide scrollbar for a cleaner look while maintaining scroll */
         ::-webkit-scrollbar { width: 0px; background: transparent; }
-        
-        /* Minimum tap target sizing (Apple/Google guidelines) */
         .tap-target { min-height: 44px; min-width: 44px; }
+        
+        /* Removes default arrows from the details summary tag */
+        details > summary { list-style: none; }
+        details > summary::-webkit-details-marker { display: none; }
     </style>
 </head>
-<body class="antialiased flex flex-col min-h-screen">
+<body class="antialiased flex flex-col min-h-screen pb-32">
 
+    <!-- APP BAR -->
     <header class="bg-white border-b border-gray-200 sticky top-0 z-40 px-4 py-3 flex justify-between items-center shadow-sm tap-target">
         <div class="flex items-center gap-3">
-            <button onclick="toggleMenu()" class="tap-target flex items-center justify-center text-gray-700 active:bg-gray-100 rounded-lg">
-                <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"></path>
-                </svg>
+            <button onclick="toggleMenu()" aria-label="Open Menu" class="tap-target flex items-center justify-center text-gray-700 active:bg-gray-100 rounded-lg">
+                <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"></path></svg>
             </button>
             <h1 id="header-title" class="text-xl font-bold tracking-tight text-gray-900">Dashboard</h1>
         </div>
         <div id="global-timer" class="hidden text-sm font-mono font-bold text-blue-600 bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-100">
+            00:00
+        </div>
+    </header>
+
+    <!-- DRAWER MENU -->
+    <div id="drawer-overlay" onclick="toggleMenu()" class="fixed inset-0 bg-black/50 z-50 transition-opacity duration-300 overlay-closed"></div>
+    <div id="drawer-menu" class="fixed inset-y-0 left-0 w-72 bg-white shadow-2xl z-50 transition-transform duration-300 drawer-closed flex flex-col">
+        <div class="p-5 border-b border-gray-100">
+            <h2 class="text-2xl font-bold text-gray-900">Pro Gym Log</h2>
+        </div>
+        <nav class="flex-1 p-4 space-y-2 overflow-y-auto">
+            <button onclick="navigate('dashboard')" class="w-full text-left tap-target px-4 rounded-xl font-semibold text-gray-700 active:bg-gray-100 flex items-center gap-3">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                Current Split
+            </button>
+            <button onclick="exportData()" class="w-full text-left tap-target px-4 rounded-xl font-semibold text-gray-700 active:bg-gray-100 flex items-center gap-3">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                Export JSON
+            </button>
+            <button onclick="resetData()" class="w-full text-left tap-target px-4 rounded-xl font-semibold text-red-600 active:bg-red-50 mt-4 flex items-center gap-3 border border-transparent active:border-red-100">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                Reset Database
+            </button>
+        </nav>
+    </div>
+
+    <!-- MAIN VIEWS -->
+    <main class="flex-1 w-full max-w-2xl mx-auto">
+        <div id="view-dashboard" class="p-4 space-y-4"></div>
+        <div id="view-workout" class="hidden flex-col"></div>
+    </main>
+
+    <!-- FIXED FOOTER -->
+    <footer id="persistent-footer" class="fixed bottom-0 left-0 w-full bg-white border-t border-gray-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] p-4 pb-safe hidden z-30">
+        <div class="max-w-2xl mx-auto">
+            <div id="rest-timer-module" class="hidden bg-gray-900 text-white rounded-2xl p-3 flex items-center justify-between mb-3 shadow-lg">
+                <div class="flex items-center gap-4">
+                    <span id="timer-display" class="text-3xl font-mono font-bold tracking-tight pl-2">00:00</span>
+                    <span class="text-xs font-bold text-gray-400 uppercase tracking-widest">Resting</span>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="addTime(30)" class="tap-target px-4 rounded-xl bg-gray-800 text-gray-200 font-bold text-sm active:bg-gray-700">+30s</button>
+                    <button onclick="stopRestTimer()" class="tap-target px-4 rounded-xl bg-red-900/40 text-red-300 font-bold text-sm active:bg-red-900/60">Skip</button>
+                </div>
+            </div>
+            <button onclick="finishWorkout()" class="w-full tap-target bg-blue-600 text-white font-bold text-lg rounded-2xl shadow-md active:bg-blue-700 active:scale-[0.98] transition-all">
+                Finish Workout ✓
+            </button>
+        </div>
+    </footer>
+
+    <script>
+        // --- DATABASE ---
+        const workoutDatabase = [
+            {
+                title: "Day 1: Incline, Vertical Pull & Abs",
+                exercises: [
+                    { name: "Machine Incline Chest Press", target: "Upper Chest", sets: 3, reps: "8–12", rest: 120, note: "Align handles with upper chest. Pin shoulders back." },
+                    { name: "Lat Pulldown Machine", target: "Lats", sets: 3, reps: "8–12", rest: 120, note: "Lean back slightly, pull elbows down to hip pockets." }
+                ]
+            },
+            {
+                title: "Day 2: Chest Isolation & Row",
+                exercises: [
+                    { name: "Machine Chest Fly (Pec Deck)", target: "Chest", sets: 3, reps: "10–15", rest: 120, note: "Slight bend in elbows. Squeeze at center." },
+                    { name: "Machine Seated Row", target: "Mid Back", sets: 3, reps: "8–12", rest: 120, note: "Chest against pad. Squeeze shoulder blades." }
+                ]
+            }
+        ];
+
+        // --- STATE ---
+        let appState = { history: [], activeSession: null };
+        let audioCtx = null;
+        let restTimerInterval = null, restTimeLeft = 0;
+        let globalTimerInterval = null;
+
+        // --- BOOTSTRAP ---
+        function initApp() {
+            try {
+                appState.history = JSON.parse(localStorage.getItem('gym_history')) || [];
+                appState.activeSession = JSON.parse(localStorage.getItem('gym_active')) || null;
+            } catch (e) { console.error("Storage corrupt"); }
+            
+            appState.activeSession ? renderActiveWorkout() : renderDashboard();
+        }
+
+        function unlockAudio() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        function playBeep() {
+            if (!audioCtx) return;
+            try {
+                const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.frequency.value = 880; gain.gain.value = 0.1;
+                osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+                if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+            } catch(e) {}
+        }
+
+        // --- UI ROUTING ---
+        function toggleMenu() {
+            unlockAudio();
+            document.getElementById('drawer-menu').classList.toggle('drawer-open');
+            document.getElementById('drawer-menu').classList.toggle('drawer-closed');
+            document.getElementById('drawer-overlay').classList.toggle('overlay-open');
+            document.getElementById('drawer-overlay').classList.toggle('overlay-closed');
+        }
+
+        function navigate(view) {
+            toggleMenu();
+            if (view === 'dashboard') {
+                if (appState.activeSession && !confirm("Abandon current workout?")) return;
+                appState.activeSession = null;
+                saveState(); stopGlobalTimer(); stopRestTimer(); renderDashboard();
+            }
+        }
+
+        // --- VIEWS ---
+        function renderDashboard() {
+            document.getElementById('view-workout').classList.add('hidden');
+            document.getElementById('persistent-footer').classList.add('hidden');
+            document.getElementById('global-timer').classList.add('hidden');
+            document.getElementById('header-title').textContent = "Dashboard";
+            
+            const dash = document.getElementById('view-dashboard');
+            dash.classList.remove('hidden');
+            dash.innerHTML = workoutDatabase.map((day, idx) => `
+                <div onclick="startWorkout(${idx})" class="tap-target bg-white p-5 rounded-2xl border border-gray-200 shadow-sm active:scale-[0.98] cursor-pointer flex justify-between items-center">
+                    <div><h2 class="text-lg font-extrabold">${day.title}</h2><p class="text-sm text-gray-500">${day.exercises.length} Exercises</p></div>
+                    <div class="h-10 w-10 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center">▶</div>
+                </div>
+            `).join('');
+        }
+
+        function startWorkout(idx) {
+            unlockAudio();
+            const tpl = workoutDatabase[idx];
+            appState.activeSession = {
+                startTime: Date.now(), title: tpl.title,
+                exercises: tpl.exercises.map(ex => ({
+                    ...ex, setsData: Array.from({length: ex.sets}, () => ({ isWarmup: false, weight: '', reps: '', rpe: '', done: false }))
+                }))
+            };
+            saveState(); renderActiveWorkout();
+        }
+
+        function getHistory(exName, setIdx) {
+            for (let i = appState.history.length - 1; i >= 0; i--) {
+                const ex = appState.history[i].exercises.find(e => e.name === exName);
+                if (ex && ex.setsData[setIdx] && ex.setsData[setIdx].done) return ex.setsData[setIdx];
+            }
+            return null;
+        }
+
+        function renderActiveWorkout() {
+            document.getElementById('view-dashboard').classList.add('hidden');
+            document.getElementById('persistent-footer').classList.remove('hidden');
+            document.getElementById('header-title').textContent = appState.activeSession.title;
+            startGlobalTimer();
+
+            const container = document.getElementById('view-workout');
+            container.classList.remove('hidden'); container.classList.add('flex');
+            
+            container.innerHTML = appState.activeSession.exercises.map((ex, exIdx) => `
+                <div class="bg-white border-b border-gray-200 p-4 mb-4">
+                    <span class="text-xs font-bold text-blue-600 uppercase">${ex.target}</span>
+                    <h2 class="text-xl font-black mb-3">${ex.name}</h2>
+                    
+                    <details class="text-sm text-gray-600 bg-gray-50 p-3 rounded-lg border border-gray-100 mb-4 group cursor-pointer">
+                        <summary class="font-medium flex justify-between items-center outline-none">
+                            <span>💡 Form Pointers</span>
+                            <span class="text-gray-400 group-open:rotate-180 transition-transform">▼</span>
+                        </summary>
+                        <div class="mt-2 pt-2 border-t border-gray-200">${ex.note}</div>
+                    </details>
+
+                    <div class="grid grid-cols-[3rem_1fr_1fr_3.5rem_3.5rem] gap-2 items-center text-xs font-bold text-gray-400 uppercase mb-2 text-center">
+                        <div>Set</div><div>kg</div><div>Reps</div><div>RPE</div><div>Done</div>
+                    </div>
+                    
+                    <div class="space-y-3">
+                        ${ex.setsData.map((set, setIdx) => {
+                            const hist = getHistory(ex.name, setIdx);
+                            const setBg = set.isWarmup ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-700';
+                            const doneBg = set.done ? 'bg-blue-600 text-white opacity-50' : 'bg-gray-200 text-gray-400';
+                            
+                            return `
+                            <div id="row-${exIdx}-${setIdx}" class="grid grid-cols-[3rem_1fr_1fr_3.5rem_3.5rem] gap-2 items-start transition-opacity">
+                                <button onclick="toggleWarmup(${exIdx}, ${setIdx})" class="w-12 h-12 rounded-xl font-extrabold ${setBg}">${set.isWarmup ? 'W' : setIdx + 1}</button>
+                                
+                                <div class="flex flex-col gap-1">
+                                    <input type="number" inputmode="decimal" value="${set.weight}" oninput="handleInput(${exIdx}, ${setIdx}, 'weight', this.value)" class="h-12 bg-gray-50 border rounded-xl text-center font-bold text-base focus:ring-2 focus:ring-blue-500">
+                                    <span class="text-[11px] text-gray-400 font-medium text-center truncate">${hist ? `Prev: ${hist.weight}` : '-'}</span>
+                                </div>
+
+                                <div class="flex flex-col gap-1">
+                                    <input type="number" inputmode="numeric" value="${set.reps}" oninput="handleInput(${exIdx}, ${setIdx}, 'reps', this.value)" class="h-12 bg-gray-50 border rounded-xl text-center font-bold text-base focus:ring-2 focus:ring-blue-500">
+                                    <span class="text-[11px] text-gray-400 font-medium text-center truncate">${hist ? `Prev: ${hist.reps}` : `Goal: ${ex.reps}`}</span>
+                                </div>
+
+                                <input type="number" inputmode="numeric" placeholder="1-10" value="${set.rpe || ''}" oninput="handleInput(${exIdx}, ${setIdx}, 'rpe', this.value)" class="h-12 bg-gray-50 border rounded-xl text-center font-bold text-sm focus:ring-2 focus:ring-blue-500">
+
+                                <button onclick="toggleSet(${exIdx}, ${setIdx})" class="w-14 h-12 rounded-xl flex items-center justify-center ${doneBg} border border-transparent">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7"></path></svg>
+                                </button>
+                            </div>`
+                        }).join('')}
+                        
+                        <button onclick="addSet(${exIdx})" class="w-full tap-target rounded-xl border-2 border-dashed border-gray-300 text-gray-500 font-bold text-sm active:bg-gray-50 mt-2">+ Add Set</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // --- DATA BINDING ---
+        function handleInput(exIdx, setIdx, field, val) {
+            appState.activeSession.exercises[exIdx].setsData[setIdx][field] = val;
+            saveState();
+        }
+
+        function toggleWarmup(exIdx, setIdx) {
+            unlockAudio();
+            appState.activeSession.exercises[exIdx].setsData[setIdx].isWarmup = !appState.activeSession.exercises[exIdx].setsData[setIdx].isWarmup;
+            saveState(); renderActiveWorkout();
+        }
+
+        function toggleSet(exIdx, setIdx) {
+            unlockAudio();
+            const set = appState.activeSession.exercises[exIdx].setsData[setIdx];
+            set.done = !set.done;
+            saveState();
+            
+            const btn = document.querySelector(`#row-${exIdx}-${setIdx} > button:last-child`);
+            if (set.done) {
+                btn.className = "w-14 h-12 rounded-xl flex items-center justify-center bg-blue-600 text-white opacity-50 border border-transparent";
+                startRestTimer(appState.activeSession.exercises[exIdx].rest);
+            } else {
+                btn.className = "w-14 h-12 rounded-xl flex items-center justify-center bg-gray-200 text-gray-400 border border-transparent";
+            }
+        }
+
+        function addSet(exIdx) {
+            appState.activeSession.exercises[exIdx].setsData.push({ isWarmup: false, weight: '', reps: '', rpe: '', done: false });
+            saveState(); renderActiveWorkout();
+        }
+
+        // --- TIMERS ---
+        function startGlobalTimer() {
+            const el = document.getElementById('global-timer'); el.classList.remove('hidden');
+            clearInterval(globalTimerInterval);
+            globalTimerInterval = setInterval(() => {
+                if(!appState.activeSession) return;
+                const secs = Math.floor((Date.now() - appState.activeSession.startTime) / 1000);
+                el.textContent = `${Math.floor((secs % 3600) / 60).toString().padStart(2, '0')}:${(secs % 60).toString().padStart(2, '0')}`;
+            }, 1000);
+        }
+        function stopGlobalTimer() { clearInterval(globalTimerInterval); document.getElementById('global-timer').classList.add('hidden'); }
+
+        function startRestTimer(secs) {
+            restTimeLeft = secs; document.getElementById('rest-timer-module').classList.remove('hidden'); updateRest();
+            clearInterval(restTimerInterval);
+            restTimerInterval = setInterval(() => {
+                restTimeLeft--;
+                if (restTimeLeft <= 0) { playBeep(); stopRestTimer(); } else { updateRest(); }
+            }, 1000);
+        }
+        function updateRest() {
+            document.getElementById('timer-display').textContent = `${Math.floor(restTimeLeft/60)}:${(restTimeLeft%60).toString().padStart(2,'0')}`;
+        }
+        function addTime(s) { unlockAudio(); restTimeLeft += s; updateRest(); }
+        function stopRestTimer() { clearInterval(restTimerInterval); document.getElementById('rest-timer-module').classList.add('hidden'); }
+
+        // --- STORAGE ---
+        function saveState() {
+            localStorage.setItem('gym_history', JSON.stringify(appState.history));
+            localStorage.setItem('gym_active', JSON.stringify(appState.activeSession));
+        }
+
+        function finishWorkout() {
+            unlockAudio();
+            if(!confirm("Finish and save this workout?")) return;
+            appState.activeSession.endTime = Date.now();
+            appState.history.push(appState.activeSession);
+            appState.activeSession = null;
+            saveState(); stopGlobalTimer(); stopRestTimer(); renderDashboard();
+        }
+
+        function exportData() { navigator.clipboard.writeText(JSON.stringify(appState.history)); alert("Data copied to clipboard."); toggleMenu(); }
+        function resetData() {
+            if(!confirm("DELETE ALL HISTORY?")) return;
+            localStorage.clear(); appState.history = []; appState.activeSession = null;
+            stopGlobalTimer(); stopRestTimer(); toggleMenu(); renderDashboard();
+        }
+
+        initApp();
+    </script>
+</body>
+</html>
             00:00
         </div>
     </header>
