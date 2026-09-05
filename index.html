@@ -1,4 +1,3 @@
-```react
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Calendar as CalendarIcon, 
@@ -18,22 +17,912 @@ import {
   Undo2,
   Edit3
 } from 'lucide-react';
-import { 
-  initializeApp 
-} from 'firebase/app';
-import { 
-  getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
-  onAuthStateChanged 
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  onSnapshot, 
-  query,
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, onSnapshot, query, deleteDoc, enableIndexedDbPersistence } from 'firebase/firestore';
+
+// --- CONFIG & CONSTANTS ---
+const DEFAULT_PROGRAM = [
+  {
+    day: 1,
+    title: "Day 1: Incline, Vertical Pull & Abs",
+    exercises: [
+      { name: "Machine Incline Chest Press", target: "Upper Chest", sets: 3, reps: "8–12", rest: 120 },
+      { name: "Lat Pulldown Machine", target: "Lats", sets: 3, reps: "8–12", rest: 120 },
+      { name: "Cable Upright Row (Straight Bar or Rope)", target: "Lateral Delts", sets: 3, reps: "10–15", rest: 90 },
+      { name: "Leg Press Machine", target: "Quads / Glutes", sets: 3, reps: "8–12", rest: 120 },
+      { name: "Cable Crunch (Rope)", target: "Upper Abdominals", sets: 3, reps: "10–15", rest: 90 },
+    ]
+  },
+  {
+    day: 2,
+    title: "Day 2: Chest Isolation, Row & Lower Abs",
+    exercises: [
+      { name: "Machine Chest Fly (Pec Deck)", target: "Chest", sets: 3, reps: "10–15", rest: 120 },
+      { name: "Machine Seated Row", target: "Lats / Mid Back", sets: 3, reps: "8–12", rest: 120 },
+      { name: "Cable Upright Row (Straight Bar or Rope)", target: "Lateral Delts", sets: 3, reps: "10–15", rest: 90 },
+      { name: "Leg Extension Machine", target: "Quads", sets: 3, reps: "10–15", rest: 90 },
+      { name: "Lying Floor Leg Raise", target: "Lower Abdominals", sets: 3, reps: "10–15", rest: 90 },
+    ]
+  },
+  {
+    day: 3,
+    title: "Day 3: Incline, Width & Obliques",
+    exercises: [
+      { name: "Machine Incline Chest Press", target: "Upper Chest", sets: 3, reps: "8–12", rest: 120 },
+      { name: "Lat Pulldown Machine", target: "Lats", sets: 3, reps: "8–12", rest: 120 },
+      { name: "Seated Leg Curl Machine", target: "Hamstrings", sets: 3, reps: "10–15", rest: 90 },
+      { name: "Machine Chest Fly (Pec Deck)", target: "Chest", sets: 3, reps: "10–15", rest: 120 },
+      { name: "Cable Woodchopper (Rope)", target: "Obliques / Core", sets: 3, reps: "10–15", rest: 90 },
+    ]
+  }
+];
+
+const haptic = () => {
+  if (typeof navigator !== 'undefined' && navigator.vibrate) {
+    navigator.vibrate(50);
+  }
+};
+
+const formatDate = (date) => {
+  const d = new Date(date);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// --- FIREBASE INIT ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'gym-log-app';
+
+try {
+  enableIndexedDbPersistence(db).catch(() => console.warn("Offline persistence not fully enabled."));
+} catch (e) {}
+
+// --- MAIN APP COMPONENT ---
+export default function GymLogApp() {
+  const [user, setUser] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  
+  const [currentTab, setCurrentTab] = useState('home');
+  const [state, setState] = useState({
+    sequenceIndex: 0,
+    activeWorkout: null,
+    program: DEFAULT_PROGRAM
+  });
+  const [history, setHistory] = useState([]);
+  const [timerEndsAt, setTimerEndsAt] = useState(null);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        console.error("Auth Error:", err);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const stateRef = doc(db, 'artifacts', appId, 'users', user.uid, 'gym_data', 'current_state');
+    const historyCol = collection(db, 'artifacts', appId, 'users', user.uid, 'gym_history');
+
+    const unsubHistory = onSnapshot(query(historyCol), (snapshot) => {
+      const hist = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      hist.sort((a, b) => b.timestamp - a.timestamp);
+      setHistory(hist);
+    }, (err) => console.error(err));
+
+    const unsubState = onSnapshot(stateRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (!data.program) data.program = DEFAULT_PROGRAM;
+        setState(data);
+      } else {
+        setDoc(stateRef, { sequenceIndex: 0, activeWorkout: null, program: DEFAULT_PROGRAM }).catch(console.error);
+      }
+      setIsLoading(false);
+    }, (err) => {
+      console.error(err);
+      setIsLoading(false);
+    });
+
+    return () => {
+      unsubHistory();
+      unsubState();
+    };
+  }, [user]);
+
+  const syncState = async (newState) => {
+    setState(newState);
+    if (!user) return;
+    try {
+      const stateRef = doc(db, 'artifacts', appId, 'users', user.uid, 'gym_data', 'current_state');
+      await setDoc(stateRef, newState);
+    } catch (e) {
+      console.error("Failed to sync state:", e);
+    }
+  };
+
+  const overrideSequenceDay = (dayNumber) => {
+    haptic();
+    const cycleLength = state.program.length;
+    const currentBase = Math.floor(state.sequenceIndex / cycleLength) * cycleLength;
+    const newIndex = currentBase + (dayNumber - 1);
+    syncState({ ...state, sequenceIndex: newIndex });
+  };
+
+  const startWorkout = () => {
+    const cycleLength = state.program.length;
+    const template = state.program[state.sequenceIndex % cycleLength];
+    
+    const newActiveWorkout = {
+      id: Date.now().toString(),
+      day: template.day,
+      title: template.title,
+      startTime: Date.now(),
+      exercises: template.exercises.map(ex => {
+        let prevWeight = 0;
+        let prevReps = 0;
+        
+        const prevWorkout = history.find(h => h.exercises && h.exercises.some(e => e.name === ex.name));
+        if (prevWorkout) {
+          const prevEx = prevWorkout.exercises.find(e => e.name === ex.name);
+          if (prevEx && prevEx.sets.length > 0) {
+            const lastSet = prevEx.sets[prevEx.sets.length - 1];
+            prevWeight = lastSet.weight;
+            prevReps = lastSet.reps;
+          }
+        }
+
+        return {
+          name: ex.name,
+          target: ex.target || "General",
+          targetSets: ex.sets,
+          targetReps: ex.reps,
+          rest: ex.rest,
+          sets: [
+            { id: Date.now() + Math.random(), weight: prevWeight, reps: prevReps || parseInt(String(ex.reps).split('–')[0]) || 10, completed: false }
+          ]
+        };
+      })
+    };
+
+    haptic();
+    syncState({ ...state, activeWorkout: newActiveWorkout });
+    setCurrentTab('workout');
+  };
+
+  const completeSet = (exerciseIndex, setIndex) => {
+    if (!state.activeWorkout) return;
+    haptic();
+    
+    const w = { ...state.activeWorkout };
+    const ex = w.exercises[exerciseIndex];
+    const s = ex.sets[setIndex];
+    
+    s.completed = true;
+    s.completedAt = Date.now();
+
+    if (setIndex === ex.sets.length - 1 && ex.sets.length < ex.targetSets) {
+      ex.sets.push({
+        id: Date.now(),
+        weight: s.weight,
+        reps: s.reps,
+        completed: false
+      });
+    }
+
+    setTimerEndsAt(Date.now() + (ex.rest * 1000));
+    syncState({ ...state, activeWorkout: w });
+  };
+
+  const uncompleteSet = (exerciseIndex, setIndex) => {
+    if (!state.activeWorkout) return;
+    haptic();
+    const w = { ...state.activeWorkout };
+    w.exercises[exerciseIndex].sets[setIndex].completed = false;
+    w.exercises[exerciseIndex].sets[setIndex].completedAt = null;
+    syncState({ ...state, activeWorkout: w });
+  };
+
+  const updateSet = (exerciseIndex, setIndex, field, value) => {
+    if (!state.activeWorkout) return;
+    const w = { ...state.activeWorkout };
+    w.exercises[exerciseIndex].sets[setIndex][field] = value;
+    syncState({ ...state, activeWorkout: w });
+  };
+
+  const finishWorkout = async () => {
+    if (!state.activeWorkout || !user) return;
+    haptic();
+
+    const workoutRecord = {
+      ...state.activeWorkout,
+      endTime: Date.now(),
+      timestamp: Date.now(),
+      dateString: formatDate(Date.now())
+    };
+
+    const newState = {
+      ...state,
+      sequenceIndex: state.sequenceIndex + 1,
+      activeWorkout: null
+    };
+
+    setState(newState);
+    setCurrentTab('home');
+    setTimerEndsAt(null);
+
+    try {
+      const historyRef = doc(db, 'artifacts', appId, 'users', user.uid, 'gym_history', workoutRecord.id);
+      await setDoc(historyRef, workoutRecord);
+      const stateRef = doc(db, 'artifacts', appId, 'users', user.uid, 'gym_data', 'current_state');
+      await setDoc(stateRef, newState);
+    } catch (e) {
+      console.error("Failed to save completed workout", e);
+    }
+  };
+
+  const deleteHistoricalWorkout = async (workoutId) => {
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'gym_history', workoutId));
+    } catch (e) {
+      console.error("Failed to delete workout", e);
+    }
+  };
+
+  const updateProgram = (newProgram) => {
+    syncState({ ...state, program: newProgram, sequenceIndex: 0 });
+  };
+
+  if (isLoading) {
+    return <div className="min-h-screen bg-[#FBF9F6] flex items-center justify-center text-[#2D2A27]">Loading...</div>;
+  }
+
+  return (
+    <div className="min-h-screen bg-[#FBF9F6] text-[#2D2A27] font-sans pb-24 selection:bg-[#EAE4DB]">
+      <main className="max-w-md mx-auto w-full p-4">
+        {currentTab === 'home' && (
+          <HomeView 
+            state={state} 
+            history={history} 
+            onStart={startWorkout} 
+            onResume={() => setCurrentTab('workout')}
+            onOverrideSequence={overrideSequenceDay}
+            onDeleteWorkout={deleteHistoricalWorkout}
+          />
+        )}
+        
+        {currentTab === 'workout' && (
+          <WorkoutView 
+            activeWorkout={state.activeWorkout}
+            history={history}
+            onCompleteSet={completeSet}
+            onUncompleteSet={uncompleteSet}
+            onUpdateSet={updateSet}
+            onFinishWorkout={finishWorkout}
+          />
+        )}
+
+        {currentTab === 'history' && (
+          <HistoryView history={history} onDeleteWorkout={deleteHistoricalWorkout} />
+        )}
+
+        {currentTab === 'more' && (
+          <MoreView 
+            history={history} 
+            user={user} 
+            program={state.program} 
+            onUpdateProgram={updateProgram} 
+          />
+        )}
+      </main>
+
+      <RestTimerWidget endsAt={timerEndsAt} onAdjust={(ms) => setTimerEndsAt(prev => prev + ms)} onClear={() => setTimerEndsAt(null)} />
+
+      <div className="fixed bottom-0 left-0 right-0 bg-[#FBF9F6]/90 backdrop-blur-md border-t border-[#EAE4DB] z-40 pb-safe">
+        <div className="max-w-md mx-auto flex justify-around items-center h-16">
+          <NavButton icon={<Home />} label="Home" active={currentTab === 'home'} onClick={() => setCurrentTab('home')} />
+          <NavButton 
+            icon={<Play className={state.activeWorkout ? "text-[#D35400] fill-[#D35400]" : ""} />} 
+            label={state.activeWorkout ? "Active" : "Workout"} 
+            active={currentTab === 'workout'} 
+            onClick={() => setCurrentTab('workout')} 
+          />
+          <NavButton icon={<History />} label="History" active={currentTab === 'history'} onClick={() => setCurrentTab('history')} />
+          <NavButton icon={<Menu />} label="More" active={currentTab === 'more'} onClick={() => setCurrentTab('more')} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// --- VIEWS ---
+function HomeView({ state, history, onStart, onResume, onOverrideSequence, onDeleteWorkout }) {
+  const [selectedDayInfo, setSelectedDayInfo] = useState(null);
+  const cycleLength = state.program.length;
+  const nextTemplate = state.program[state.sequenceIndex % cycleLength];
+  
+  return (
+    <div className="space-y-8 pt-4 animate-in fade-in duration-300">
+      <div className="text-center space-y-2">
+        <h1 className="text-sm font-medium tracking-widest text-[#857F75] uppercase">Sequence</h1>
+        <div className="flex justify-center items-center gap-3 flex-wrap px-2">
+          {state.program.map((p, idx) => {
+            const dayNum = idx + 1;
+            const isNext = (state.sequenceIndex % cycleLength) + 1 === dayNum;
+            return (
+              <div key={dayNum} className="flex items-center gap-3 mb-2">
+                <button 
+                  onClick={() => onOverrideSequence(dayNum)}
+                  className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-lg transition-colors active:scale-95 ${
+                    isNext ? 'bg-[#2D2A27] text-[#FBF9F6]' : 'bg-[#EAE4DB] text-[#857F75] hover:bg-[#D0C9BE]'
+                  }`}
+                >
+                  {dayNum}
+                </button>
+                {dayNum < cycleLength && <ChevronRight size={16} className="text-[#D0C9BE]" />}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {state.activeWorkout ? (
+        <div className="bg-white border border-[#EAE4DB] rounded-2xl p-6 text-center shadow-sm">
+          <h2 className="text-xl font-bold mb-2">Workout in progress</h2>
+          <p className="text-[#857F75] mb-6 text-sm">{state.activeWorkout.title}</p>
+          <button onClick={onResume} className="w-full bg-[#2D2A27] text-white py-4 rounded-xl font-semibold text-lg active:scale-[0.98]">
+            Resume Workout
+          </button>
+        </div>
+      ) : (
+        <div className="bg-white border border-[#EAE4DB] rounded-2xl p-6 text-center shadow-sm">
+          <h2 className="text-xl font-bold mb-2 text-[#2D2A27]">{nextTemplate.title}</h2>
+          <p className="text-[#857F75] mb-6 text-sm">Next in sequence</p>
+          <button onClick={onStart} className="w-full bg-[#2D2A27] text-white py-4 rounded-xl font-semibold text-lg active:scale-[0.98]">
+            Start Workout
+          </button>
+        </div>
+      )}
+
+      <div className="bg-white border border-[#EAE4DB] rounded-2xl p-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-[#857F75] uppercase tracking-wider mb-4 flex items-center gap-2">
+          <CalendarIcon size={16} /> Consistency
+        </h3>
+        <MiniCalendar history={history} onDayClick={(day, workouts) => setSelectedDayInfo({ day, workouts })} />
+      </div>
+
+      {selectedDayInfo && <DayDetailsModal info={selectedDayInfo} onClose={() => setSelectedDayInfo(null)} onDeleteWorkout={onDeleteWorkout} />}
+    </div>
+  );
+}
+
+function WorkoutView({ activeWorkout, history, onCompleteSet, onUncompleteSet, onUpdateSet, onFinishWorkout }) {
+  if (!activeWorkout) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4">
+        <div className="w-16 h-16 bg-[#EAE4DB] rounded-full flex items-center justify-center text-[#857F75]">
+          <Play size={32} />
+        </div>
+        <p className="text-[#857F75] font-medium">No active workout.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 pt-2 animate-in slide-in-from-right-4 duration-300">
+      <div className="mb-6 px-1">
+        <h2 className="font-bold text-xl">{activeWorkout.title}</h2>
+      </div>
+
+      {activeWorkout.exercises.map((ex, exIndex) => {
+        const isDone = ex.sets.length >= ex.targetSets && ex.sets.every(s => s.completed);
+        const prevPerf = getPreviousPerformance(history, ex.name);
+
+        return (
+          <div key={exIndex} className={`bg-white border transition-colors duration-300 ${isDone ? 'border-[#EAE4DB] opacity-70' : 'border-[#2D2A27] shadow-sm'} rounded-2xl overflow-hidden`}>
+            <div className="p-4 bg-white flex justify-between items-start">
+              <div>
+                <h3 className="font-bold text-lg leading-tight mb-1">{ex.name}</h3>
+                <p className="text-[#857F75] text-sm font-medium">{ex.target} • {ex.targetSets} sets • {ex.targetReps} reps</p>
+                {prevPerf && <p className="text-xs text-[#A39D91] mt-2 bg-[#FBF9F6] inline-block px-2 py-1 rounded-md">Prev: {prevPerf}</p>}
+              </div>
+              {isDone && <div className="w-8 h-8 rounded-full bg-[#EAE4DB] text-[#857F75] flex items-center justify-center"><Check size={16} strokeWidth={3} /></div>}
+            </div>
+
+            <div className="p-2 space-y-2 bg-[#FAFAFA] border-t border-[#F0F0F0]">
+              {ex.sets.map((set, setIndex) => (
+                <SetRow 
+                  key={set.id}
+                  set={set}
+                  setIndex={setIndex}
+                  onUpdate={(field, val) => onUpdateSet(exIndex, setIndex, field, val)}
+                  onComplete={() => onCompleteSet(exIndex, setIndex)}
+                  onUncomplete={() => onUncompleteSet(exIndex, setIndex)}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      <div className="pt-8 pb-4">
+        <button onClick={onFinishWorkout} className="w-full bg-[#2D2A27] text-white py-4 rounded-xl font-bold text-lg active:scale-[0.98]">
+          Complete Workout
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryView({ history, onDeleteWorkout }) {
+  if (history.length === 0) {
+    return (
+      <div className="text-center pt-20 text-[#857F75]">
+        <History size={48} className="mx-auto mb-4 opacity-20" />
+        <p>No workouts recorded yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4 pt-4 pb-12 animate-in fade-in duration-300">
+      <h2 className="font-bold text-2xl mb-6">History</h2>
+      {history.map((w) => (
+        <WorkoutCard key={w.id} workout={w} onDelete={() => onDeleteWorkout(w.id)} />
+      ))}
+    </div>
+  );
+}
+
+function MoreView({ history, user, program, onUpdateProgram }) {
+  const [editingProgram, setEditingProgram] = useState(false);
+
+  const exportData = () => {
+    const dataStr = JSON.stringify(history, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'application/json' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `gym_log_export_${formatDate(Date.now())}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  if (editingProgram) {
+    return <ProgramEditor program={program} onSave={(p) => { onUpdateProgram(p); setEditingProgram(false); }} onCancel={() => setEditingProgram(false)} />;
+  }
+
+  return (
+    <div className="pt-4 space-y-6 animate-in fade-in duration-300 pb-12">
+      <h2 className="font-bold text-2xl mb-6">Settings</h2>
+
+      <div className="bg-white border border-[#EAE4DB] rounded-2xl overflow-hidden shadow-sm p-4">
+        <h3 className="font-semibold mb-2 flex items-center gap-2"><Edit3 size={18} /> Program Configuration</h3>
+        <p className="text-sm text-[#857F75] mb-4">Customize your workout sequence. Add new days, rename existing ones, or edit your exercises.</p>
+        <button onClick={() => { haptic(); setEditingProgram(true); }} className="flex items-center gap-2 text-sm font-semibold bg-[#2D2A27] text-white px-4 py-3 rounded-xl w-full justify-center active:scale-[0.98]">
+          Manage Workout Program
+        </button>
+      </div>
+      
+      <div className="bg-white border border-[#EAE4DB] rounded-2xl overflow-hidden shadow-sm">
+        <div className="p-4 border-b border-[#EAE4DB]">
+          <h3 className="font-semibold mb-1">Data Management</h3>
+          <p className="text-sm text-[#857F75] mb-4">Your data is automatically synced to the cloud. You can also export a manual backup.</p>
+          <button onClick={exportData} className="flex items-center gap-2 text-sm font-semibold bg-[#FBF9F6] border border-[#EAE4DB] px-4 py-3 rounded-xl w-full justify-center active:bg-[#EAE4DB]">
+            <Download size={18} /> Export History (JSON)
+          </button>
+        </div>
+        <div className="p-4 bg-[#FAFAFA] text-xs text-[#A39D91]">
+          <p>User ID: {user?.uid || 'Not connected'}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProgramEditor({ program, onSave, onCancel }) {
+  const [draft, setDraft] = useState([...program]);
+  const [editingDayIdx, setEditingDayIdx] = useState(null);
+
+  const handleAddDay = () => {
+    haptic();
+    setDraft([...draft, { day: draft.length + 1, title: `Day ${draft.length + 1}: Custom`, exercises: [] }]);
+  };
+
+  const handleRemoveDay = (idx) => {
+    if (draft.length <= 1) return;
+    haptic();
+    const newDraft = draft.filter((_, i) => i !== idx).map((d, i) => ({ ...d, day: i + 1 }));
+    setDraft(newDraft);
+  };
+
+  const updateDayTitle = (idx, newTitle) => {
+    const newDraft = [...draft];
+    newDraft[idx].title = newTitle;
+    setDraft(newDraft);
+  };
+
+  const addExercise = (dayIdx) => {
+    haptic();
+    const newDraft = [...draft];
+    newDraft[dayIdx].exercises.push({ name: "New Exercise", target: "Muscle", sets: 3, reps: "10", rest: 90 });
+    setDraft(newDraft);
+  };
+
+  const updateExercise = (dayIdx, exIdx, field, val) => {
+    const newDraft = [...draft];
+    newDraft[dayIdx].exercises[exIdx][field] = val;
+    setDraft(newDraft);
+  };
+
+  const removeExercise = (dayIdx, exIdx) => {
+    haptic();
+    const newDraft = [...draft];
+    newDraft[dayIdx].exercises = newDraft[dayIdx].exercises.filter((_, i) => i !== exIdx);
+    setDraft(newDraft);
+  };
+
+  return (
+    <div className="animate-in slide-in-from-right-4 duration-300 pb-12">
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="font-bold text-2xl">Edit Program</h2>
+        <button onClick={() => { haptic(); onCancel(); }} className="p-2 text-[#857F75] active:text-[#2D2A27]">Cancel</button>
+      </div>
+
+      <div className="space-y-4 mb-8">
+        {draft.map((day, idx) => (
+          <div key={idx} className="bg-white border border-[#EAE4DB] rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-4 flex justify-between items-center cursor-pointer active:bg-[#FBF9F6]" onClick={() => setEditingDayIdx(editingDayIdx === idx ? null : idx)}>
+              <h3 className="font-bold">{day.title}</h3>
+              <div className="flex items-center gap-3 text-[#A39D91]">
+                <span className="text-xs">{day.exercises.length} Exercises</span>
+                <ChevronRight className={editingDayIdx === idx ? "rotate-90 transition-transform" : "transition-transform"} size={18} />
+              </div>
+            </div>
+
+            {editingDayIdx === idx && (
+              <div className="p-4 border-t border-[#EAE4DB] bg-[#FAFAFA] space-y-4">
+                <div>
+                  <label className="text-xs font-bold text-[#857F75] uppercase tracking-wider mb-1 block">Day Title</label>
+                  <input type="text" value={day.title} onChange={(e) => updateDayTitle(idx, e.target.value)} className="w-full bg-white border border-[#EAE4DB] rounded-xl px-3 py-2 font-semibold text-[#2D2A27]" />
+                </div>
+
+                <div className="space-y-3">
+                  <label className="text-xs font-bold text-[#857F75] uppercase tracking-wider mb-1 block">Exercises</label>
+                  {day.exercises.map((ex, exIdx) => (
+                    <div key={exIdx} className="bg-white border border-[#EAE4DB] p-3 rounded-xl relative">
+                      <button onClick={() => removeExercise(idx, exIdx)} className="absolute top-2 right-2 text-[#D0C9BE] hover:text-red-500"><X size={16} /></button>
+                      <input type="text" value={ex.name} onChange={(e) => updateExercise(idx, exIdx, 'name', e.target.value)} className="w-[90%] font-semibold mb-2 focus:outline-none" />
+                      <div className="flex gap-2 text-sm">
+                        <div className="flex-1">
+                          <label className="text-[10px] text-[#A39D91] block">Sets</label>
+                          <input type="number" value={ex.sets} onChange={(e) => updateExercise(idx, exIdx, 'sets', parseInt(e.target.value) || 0)} className="w-full bg-[#FBF9F6] p-1.5 rounded-md" />
+                        </div>
+                        <div className="flex-1">
+                          <label className="text-[10px] text-[#A39D91] block">Reps</label>
+                          <input type="text" value={ex.reps} onChange={(e) => updateExercise(idx, exIdx, 'reps', e.target.value)} className="w-full bg-[#FBF9F6] p-1.5 rounded-md" />
+                        </div>
+                        <div className="flex-1">
+                          <label className="text-[10px] text-[#A39D91] block">Rest (s)</label>
+                          <input type="number" value={ex.rest} onChange={(e) => updateExercise(idx, exIdx, 'rest', parseInt(e.target.value) || 0)} className="w-full bg-[#FBF9F6] p-1.5 rounded-md" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button onClick={() => addExercise(idx)} className="w-full py-3 border-2 border-dashed border-[#EAE4DB] text-[#857F75] font-semibold rounded-xl">+ Add Exercise</button>
+                </div>
+                {draft.length > 1 && <button onClick={() => handleRemoveDay(idx)} className="w-full py-3 mt-4 text-red-500 font-semibold bg-red-50 rounded-xl">Delete Day</button>}
+              </div>
+            )}
+          </div>
+        ))}
+
+        <button onClick={handleAddDay} className="w-full py-4 border-2 border-dashed border-[#2D2A27] text-[#2D2A27] font-bold rounded-2xl">+ Add Custom Day</button>
+      </div>
+
+      <button onClick={() => { haptic(); onSave(draft); }} className="w-full bg-[#2D2A27] text-white py-4 rounded-xl font-bold text-lg active:scale-[0.98] sticky bottom-20 shadow-lg">
+        Save Program
+      </button>
+    </div>
+  );
+}
+
+function SetRow({ set, setIndex, onUpdate, onComplete, onUncomplete }) {
+  const [editingField, setEditingField] = useState(null);
+
+  const renderEditor = (field, value, step) => (
+    <div className="flex items-center gap-1 bg-[#F5F2EC] rounded-xl p-1">
+      <button onClick={() => { haptic(); onUpdate(field, Math.max(0, value - step)); }} className="w-12 h-10 flex items-center justify-center text-[#857F75]"><Minus size={18} /></button>
+      <div className="w-16 text-center font-bold text-lg">{value}</div>
+      <button onClick={() => { haptic(); onUpdate(field, value + step); }} className="w-12 h-10 flex items-center justify-center text-[#857F75]"><Plus size={18} /></button>
+      <button onClick={() => setEditingField(null)} className="ml-2 w-10 h-10 bg-[#2D2A27] text-white rounded-lg flex items-center justify-center"><Check size={18} /></button>
+    </div>
+  );
+
+  if (set.completed) {
+    return (
+      <button onClick={onUncomplete} className="w-full flex items-center justify-between p-2 rounded-xl opacity-60 group text-left">
+        <div className="flex items-center gap-4 pl-2">
+          <span className="text-[#A39D91] font-bold w-4">{setIndex + 1}</span>
+          <div className="font-semibold text-lg">{set.weight} <span className="text-sm font-normal text-[#857F75]">kg</span></div>
+          <div className="font-semibold text-lg">{set.reps} <span className="text-sm font-normal text-[#857F75]">reps</span></div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase font-bold text-[#A39D91] opacity-0 group-hover:opacity-100 flex items-center gap-1"><Undo2 size={12} /> Undo</span>
+          <div className="w-12 h-12 flex items-center justify-center text-[#857F75]"><Check size={20} strokeWidth={3} /></div>
+        </div>
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between bg-white border border-[#EAE4DB] p-2 rounded-xl shadow-sm relative">
+      <div className="flex items-center gap-2 flex-1">
+        <span className="text-[#A39D91] font-bold w-6 text-center">{setIndex + 1}</span>
+        {editingField === 'weight' ? renderEditor('weight', set.weight, 2.5) : (
+          <button onClick={() => { haptic(); setEditingField('weight'); }} className="flex-1 flex items-baseline justify-center gap-1 py-3 px-2 rounded-lg bg-[#FBF9F6]">
+            <span className="font-bold text-xl">{set.weight}</span><span className="text-[#857F75] text-sm">kg</span>
+          </button>
+        )}
+        {!editingField && <span className="text-[#EAE4DB]">&times;</span>}
+        {editingField === 'reps' ? renderEditor('reps', set.reps, 1) : (
+          <button onClick={() => { haptic(); setEditingField('reps'); }} className="flex-1 flex items-baseline justify-center gap-1 py-3 px-2 rounded-lg bg-[#FBF9F6]">
+            <span className="font-bold text-xl">{set.reps}</span><span className="text-[#857F75] text-sm">reps</span>
+          </button>
+        )}
+      </div>
+      {!editingField && (
+        <button onClick={onComplete} className="ml-3 w-14 h-14 rounded-full border-2 border-[#2D2A27] flex items-center justify-center text-[#2D2A27]">
+          <div className="w-4 h-4 rounded-full bg-current opacity-20"></div>
+        </button>
+      )}
+    </div>
+  );
+}
+
+function WorkoutCard({ workout, onDelete }) {
+  return (
+    <div className="bg-white border border-[#EAE4DB] p-4 rounded-2xl shadow-sm">
+      <div className="flex justify-between items-start mb-4">
+        <div>
+          <p className="text-[#857F75] text-sm font-medium">{new Date(workout.timestamp).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</p>
+          <h3 className="font-bold">{workout.title}</h3>
+        </div>
+        {onDelete && <DeleteConfirmButton onDelete={onDelete} />}
+      </div>
+      <div className="space-y-3">
+        {workout.exercises.map((ex, i) => {
+          const completedSets = ex.sets.filter(s => s.completed);
+          if (completedSets.length === 0) return null;
+          
+          let displaySets = [];
+          let currentCount = 0;
+          let currentStr = "";
+
+          completedSets.forEach((s, idx) => {
+            const str = `${s.weight}kg × ${s.reps}`;
+            if (str === currentStr) {
+              currentCount++;
+            } else {
+              if (currentCount > 0) displaySets.push(currentCount > 1 ? `${currentCount} × ${currentStr}` : currentStr);
+              currentStr = str;
+              currentCount = 1;
+            }
+            if (idx === completedSets.length - 1) displaySets.push(currentCount > 1 ? `${currentCount} × ${currentStr}` : currentStr);
+          });
+
+          return (
+            <div key={i} className="text-sm">
+              <span className="font-semibold text-[#54504A]">{ex.name}</span>
+              <div className="text-[#857F75] mt-0.5">{displaySets.join('  |  ')}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function DeleteConfirmButton({ onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+
+  useEffect(() => {
+    if (confirming) {
+      const timer = setTimeout(() => setConfirming(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [confirming]);
+
+  if (confirming) {
+    return <button onClick={() => { haptic(); onDelete(); setConfirming(false); }} className="bg-red-100 text-red-600 font-bold text-xs px-3 py-2 rounded-lg">Tap to Delete</button>;
+  }
+
+  return <button onClick={() => { haptic(); setConfirming(true); }} className="p-2 text-[#D0C9BE] hover:text-red-500"><Trash2 size={18} /></button>;
+}
+
+function DayDetailsModal({ info, onClose, onDeleteWorkout }) {
+  const dateStr = info.day ? info.day.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) : '';
+  
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-[#2D2A27]/40 backdrop-blur-sm p-2">
+      <div className="bg-[#FBF9F6] w-full max-w-md rounded-3xl p-5 max-h-[85vh] overflow-y-auto relative shadow-2xl">
+        <div className="flex justify-between items-center mb-6 sticky top-0 bg-[#FBF9F6] pt-1 pb-3 border-b border-[#EAE4DB]">
+          <h2 className="font-bold text-lg">{dateStr}</h2>
+          <button onClick={() => { haptic(); onClose(); }} className="w-10 h-10 bg-[#EAE4DB] text-[#2D2A27] rounded-full flex items-center justify-center"><X size={20} /></button>
+        </div>
+        {info.workouts.length === 0 ? (
+          <div className="text-center py-10 text-[#857F75]"><p>No workouts recorded on this day.</p></div>
+        ) : (
+          <div className="space-y-4">
+            {info.workouts.map(w => (
+              <WorkoutCard key={w.id} workout={w} onDelete={() => { onDeleteWorkout(w.id); onClose(); }} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MiniCalendar({ history, onDayClick }) {
+  const [currentMonthDate, setCurrentMonthDate] = useState(new Date());
+
+  const prevMonth = () => {
+    haptic();
+    setCurrentMonthDate(new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth() - 1, 1));
+  };
+
+  const nextMonth = () => {
+    haptic();
+    setCurrentMonthDate(new Date(currentMonthDate.getFullYear(), currentMonthDate.getMonth() + 1, 1));
+  };
+
+  const year = currentMonthDate.getFullYear();
+  const month = currentMonthDate.getMonth();
+  
+  const firstDay = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  
+  const days = [];
+  const emptyCells = firstDay === 0 ? 6 : firstDay - 1; 
+
+  for (let i = 0; i < emptyCells; i++) days.push(null);
+  for (let i = 1; i <= daysInMonth; i++) days.push(i);
+
+  const workoutsByDay = useMemo(() => {
+    const map = new Map();
+    history.forEach(w => {
+      const d = new Date(w.timestamp);
+      if (d.getFullYear() === year && d.getMonth() === month) {
+        const dateKey = d.getDate();
+        const existing = map.get(dateKey) || [];
+        map.set(dateKey, [...existing, w]);
+      }
+    });
+    return map;
+  }, [history, year, month]);
+
+  const dayNames = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  const today = new Date();
+
+  return (
+    <div className="w-full">
+      <div className="flex justify-between items-center mb-4 text-[#2D2A27] font-semibold">
+        <button onClick={prevMonth} className="p-1 rounded-md"><ChevronLeft size={20} /></button>
+        <span>{currentMonthDate.toLocaleString('default', { month: 'long' })} {year}</span>
+        <button onClick={nextMonth} className="p-1 rounded-md"><ChevronRight size={20} /></button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-xs mb-2 text-[#A39D91] font-medium">
+        {dayNames.map((d, i) => <div key={i}>{d}</div>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {days.map((d, i) => {
+          if (!d) return <div key={i} className="aspect-square" />;
+          const isToday = d === today.getDate() && year === today.getFullYear() && month === today.getMonth();
+          const dayWorkouts = workoutsByDay.get(d) || [];
+          const hasWorkout = dayWorkouts.length > 0;
+          const currentDayDate = new Date(year, month, d);
+          
+          let classes = "aspect-square rounded-full flex items-center justify-center text-sm font-medium transition-colors mx-auto w-8 h-8 cursor-pointer ";
+          if (hasWorkout) classes += "bg-[#2D2A27] text-white";
+          else if (isToday) classes += "border-2 border-[#2D2A27] text-[#2D2A27]";
+          else classes += "text-[#857F75] hover:bg-[#EAE4DB]";
+
+          return (
+            <button key={i} className={classes} onClick={() => { haptic(); onDayClick(currentDayDate, dayWorkouts); }}>
+              {d}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function RestTimerWidget({ endsAt, onAdjust, onClear }) {
+  const [timeLeft, setTimeLeft] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    if (!endsAt) return;
+    const tick = () => {
+      const remaining = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+      setTimeLeft(remaining);
+      if (remaining === 0) {
+        haptic();
+        setTimeout(onClear, 2000); 
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [endsAt, onClear]);
+
+  if (!endsAt || timeLeft === 0) return null;
+
+  const mins = Math.floor(timeLeft / 60);
+  const secs = timeLeft % 60;
+  const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+  return (
+    <div className="fixed bottom-20 left-0 right-0 flex justify-center z-50 pointer-events-none px-4">
+      <div className={`pointer-events-auto bg-[#2D2A27] text-white rounded-full shadow-lg flex items-center overflow-hidden ${expanded ? 'max-w-xs' : 'max-w-[120px]'}`}>
+        {expanded && <button onClick={() => { haptic(); onAdjust(-10000); }} className="px-4 py-3 font-semibold text-sm border-r border-[#4A4743]">-10s</button>}
+        <button onClick={() => { haptic(); setExpanded(!expanded); }} className="px-5 py-3 font-mono font-bold text-lg flex items-center gap-2 min-w-[100px] justify-center">
+          <Clock size={16} className={timeLeft < 10 ? 'animate-pulse text-[#D35400]' : ''} />
+          {timeStr}
+        </button>
+        {expanded && (
+          <>
+            <button onClick={() => { haptic(); onAdjust(10000); }} className="px-4 py-3 font-semibold text-sm border-l border-[#4A4743]">+10s</button>
+            <button onClick={() => { haptic(); onClear(); }} className="px-4 py-3 font-semibold text-sm border-l border-[#4A4743] text-[#A39D91]">Skip</button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function NavButton({ icon, label, active, onClick }) {
+  return (
+    <button onClick={() => { haptic(); onClick(); }} className={`flex flex-col items-center justify-center w-16 h-full ${active ? 'text-[#2D2A27]' : 'text-[#A39D91]'}`}>
+      <div className="mb-1">{icon}</div>
+      <span className="text-[10px] font-semibold">{label}</span>
+    </button>
+  );
+}
+
+function getPreviousPerformance(history, exerciseName) {
+  for (const workout of history) {
+    const ex = workout.exercises?.find(e => e.name === exerciseName);
+    if (ex && ex.sets && ex.sets.length > 0) {
+      const completed = ex.sets.filter(s => s.completed);
+      if (completed.length === 0) continue;
+      const weight = completed[0].weight;
+      const reps = completed.map(s => s.reps).join(', ');
+      return `${weight}kg × ${reps}`;
+    }
+  }
+  return null;
+}
   deleteDoc,
   enableIndexedDbPersistence
 } from 'firebase/firestore';
